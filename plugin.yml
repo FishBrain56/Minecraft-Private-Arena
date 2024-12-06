@@ -1,0 +1,33 @@
+name: PrivateArena
+version: 1.0.0
+main: com.gmail.PrivateArena
+api-version: 1.20
+
+commands:
+  pa:
+    description: Private Arena commands
+    usage: /pa [set | invite <player> | accept]
+    permission: privateArena.use
+  pa set:
+    description: Sets the private arena location
+    permission: privateArena.set
+  pa invite:
+    description: Invites a player to the private arena
+    permission: privateArena.invite
+  pa accept:
+    description: Accepts the invite to the private arena
+    permission: privateArena.accept
+
+permissions:
+  privateArena.use:
+    description: Permission to use all pa commands
+    default: true
+  privateArena.set:
+    description: Allows placing a private arena
+    default: op
+  privateArena.invite:
+    description: Gives permission to invite to a private arena
+    default: op
+  privateArena.accept:
+    description: Gives permission to accept a private arena invite
+    default: true
