@@ -1,0 +1,281 @@
+package com.gmail;
+
+
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.enchantments.Enchantment;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
+
+public final class PrivateArena extends JavaPlugin implements CommandExecutor, Listener {
+
+    private FileConfiguration config;
+    private Location paLocation;
+    private Set<String> invitedPlayers = new HashSet<>();
+    private HashMap<UUID, Long> combatTimer = new HashMap<>();
+    private final long COMBAT_DURATION = 10 * 1000L; // Combat timer in milliseconds
+
+    @Override
+    public void onEnable() {
+        // Load config
+        config = getConfig();
+        saveDefaultConfig();
+
+        // Register commands
+        getCommand("pa").setExecutor(this);
+
+        // Register events
+        Bukkit.getPluginManager().registerEvents(this, this);
+
+        // Load PA location from config
+        loadPALocation();
+
+        getLogger().info("PrivateArena Plugin enabled!");
+    }
+
+    @Override
+    public void onDisable() {
+        // Save PA location to config
+        savePALocation();
+
+        getLogger().info("PrivateArena Plugin disabled!");
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage("This command can only be executed by a player.");
+            return true;
+        }
+
+        Player player = (Player) sender;
+
+        // Check if player is in combat
+        if (isInCombat(player)) {
+            player.sendMessage(ChatColor.RED + "You are in combat! You cannot use this command for 10 seconds.");
+            return true;
+        }
+
+        if (args.length == 0) {
+            if (paLocation == null) {
+                player.sendMessage(ChatColor.RED + "Private Arena location not set.");
+                return true;
+            }
+
+            openKitSelectionMenu(player);
+            return true;
+        }
+
+        if (args[0].equalsIgnoreCase("set")) {
+            if (!player.hasPermission("privateArena.set")) {
+                player.sendMessage(ChatColor.RED + "You do not have permission to set the Private Arena location.");
+                return true;
+            }
+
+            paLocation = player.getLocation();
+            player.sendMessage(ChatColor.GREEN + "Private Arena location set!");
+            return true;
+        }
+
+        if (args[0].equalsIgnoreCase("invite")) {
+            if (args.length != 2) {
+                player.sendMessage(ChatColor.RED + "Usage: /pa invite <player>");
+                return true;
+            }
+
+            String invitedPlayerName = args[1];
+            Player invitedPlayer = Bukkit.getPlayer(invitedPlayerName);
+
+            if (invitedPlayer == null) {
+                player.sendMessage(ChatColor.RED + "Player not found.");
+                return true;
+            }
+
+            invitedPlayers.add(invitedPlayerName);
+            invitedPlayer.sendMessage(ChatColor.GREEN + player.getName() + " has invited you to the Private Arena. Use /pa accept to join.");
+            player.sendMessage(ChatColor.GREEN + "You have invited " + invitedPlayerName + " to the Private Arena.");
+            return true;
+        }
+
+        if (args[0].equalsIgnoreCase("accept")) {
+            if (invitedPlayers.contains(player.getName())) {
+                invitedPlayers.remove(player.getName());
+                openKitSelectionMenu(player);
+            } else {
+                player.sendMessage(ChatColor.RED + "You are not invited to the Private Arena.");
+            }
+            return true;
+        }
+
+        player.sendMessage(ChatColor.RED + "Invalid command. Use /pa for help.");
+        return true;
+    }
+
+    @EventHandler
+    public void onPlayerDamage(EntityDamageByEntityEvent event) {
+        if (event.getEntity() instanceof Player) {
+            Player damagedPlayer = (Player) event.getEntity();
+            setCombatTimer(damagedPlayer);
+        }
+
+        if (event.getDamager() instanceof Player) {
+            Player damagerPlayer = (Player) event.getDamager();
+            setCombatTimer(damagerPlayer);
+        }
+    }
+
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) return;
+
+        Player player = (Player) event.getWhoClicked();
+        Inventory inventory = event.getClickedInventory();
+
+        if (inventory == null) return; // Verhindert null pointer exceptions
+
+        // Hier prüfen wir nur das Menü für die Kit-Auswahl
+        if (inventory.getSize() == 9 && event.getView().getTitle().equals(ChatColor.GREEN + "Select Your Kit")) {
+            event.setCancelled(true); // Nur Klicks im Kit-Menü blockieren
+
+            ItemStack clickedItem = event.getCurrentItem();
+            if (clickedItem == null || clickedItem.getType() == Material.AIR) return;
+
+            String itemName = clickedItem.getItemMeta().getDisplayName();
+            if (itemName.equals(ChatColor.GOLD + "Beast")) {
+                equipBeastKit(player);
+            } else if (itemName.equals(ChatColor.AQUA + "Speed")) {
+                equipSpeedKit(player);
+            }
+
+            player.closeInventory();
+            player.teleport(paLocation); // Spieler teleportieren
+            player.sendMessage(ChatColor.GREEN + "You have joined the Private Arena!");
+        }
+    }
+
+    private void setCombatTimer(Player player) {
+        combatTimer.put(player.getUniqueId(), System.currentTimeMillis());
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (isInCombat(player)) {
+                    combatTimer.remove(player.getUniqueId());
+                }
+            }
+        }.runTaskLater(this, COMBAT_DURATION / 50);
+    }
+
+    private boolean isInCombat(Player player) {
+        Long lastDamageTime = combatTimer.get(player.getUniqueId());
+        return lastDamageTime != null && (System.currentTimeMillis() - lastDamageTime) < COMBAT_DURATION;
+    }
+
+    private void openKitSelectionMenu(Player player) {
+        Inventory kitMenu = Bukkit.createInventory(null, 9, ChatColor.GREEN + "Select Your Kit");
+
+        ItemStack beastKit = new ItemStack(Material.DIAMOND_SWORD);
+        ItemMeta beastMeta = beastKit.getItemMeta();
+        beastMeta.setDisplayName(ChatColor.GOLD + "Beast");
+        beastKit.setItemMeta(beastMeta);
+
+        ItemStack speedKit = new ItemStack(Material.FEATHER);
+        ItemMeta speedMeta = speedKit.getItemMeta();
+        speedMeta.setDisplayName(ChatColor.AQUA + "Speed");
+        speedKit.setItemMeta(speedMeta);
+
+        kitMenu.setItem(3, beastKit);
+        kitMenu.setItem(5, speedKit);
+
+        player.openInventory(kitMenu);
+    }
+
+    private void equipBeastKit(Player player) {
+        player.getInventory().clear();
+
+        ItemStack helmet = new ItemStack(Material.DIAMOND_HELMET);
+        helmet.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 3);
+
+        ItemStack chestplate = new ItemStack(Material.DIAMOND_CHESTPLATE);
+        chestplate.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 3);
+
+        ItemStack leggings = new ItemStack(Material.DIAMOND_LEGGINGS);
+        leggings.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 3);
+
+        ItemStack boots = new ItemStack(Material.DIAMOND_BOOTS);
+        boots.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 3);
+
+        player.getInventory().setHelmet(helmet);
+        player.getInventory().setChestplate(chestplate);
+        player.getInventory().setLeggings(leggings);
+        player.getInventory().setBoots(boots);
+
+        player.getInventory().addItem(new ItemStack(Material.DIAMOND_SWORD));
+    }
+
+    private void equipSpeedKit(Player player) {
+        player.getInventory().clear();
+
+        ItemStack helmet = new ItemStack(Material.IRON_HELMET);
+        helmet.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 3);
+
+        ItemStack chestplate = new ItemStack(Material.DIAMOND_CHESTPLATE);
+        chestplate.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 2);
+
+        ItemStack leggings = new ItemStack(Material.IRON_LEGGINGS);
+        leggings.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 3);
+
+        ItemStack boots = new ItemStack(Material.DIAMOND_BOOTS);
+        boots.addEnchantment(Enchantment.PROTECTION_ENVIRONMENTAL, 2);
+
+        player.getInventory().setHelmet(helmet);
+        player.getInventory().setChestplate(chestplate);
+        player.getInventory().setLeggings(leggings);
+        player.getInventory().setBoots(boots);
+
+        ItemStack sword = new ItemStack(Material.DIAMOND_SWORD);
+        sword.addEnchantment(Enchantment.DAMAGE_ALL, 1);
+
+        player.getInventory().addItem(sword);
+
+        player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, Integer.MAX_VALUE, 1, false, false));
+    }
+
+    private void loadPALocation() {
+        if (config.contains("pa.world") && config.contains("pa.x") && config.contains("pa.y") && config.contains("pa.z")) {
+            paLocation = new Location(Bukkit.getWorld(config.getString("pa.world")),
+                    config.getDouble("pa.x"), config.getDouble("pa.y"), config.getDouble("pa.z"));
+        }
+    }
+
+    private void savePALocation() {
+        if (paLocation != null) {
+            config.set("pa.world", paLocation.getWorld().getName());
+            config.set("pa.x", paLocation.getX());
+            config.set("pa.y", paLocation.getY());
+            config.set("pa.z", paLocation.getZ());
+            saveConfig();
+        }
+    }
+}
